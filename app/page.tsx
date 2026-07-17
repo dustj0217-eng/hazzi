@@ -153,8 +153,8 @@ export default function Page() {
 
       {/* Feed */}
 
-      <section className="mx-auto flex max-w-md flex-col gap-1 px-4 pt-2">
-        {feeds.map((feed, index) => {
+      <section className="mx-auto flex max-w-md grid grid-cols-2 gap-1 px-4 pt-2">
+        {feeds.map((feed) => {
           const isApproved = approvedFeeds.includes(feed.id);
           const isRejected = rejectedFeeds.includes(feed.id);
 
@@ -163,7 +163,7 @@ export default function Page() {
               key={feed.id}
               className="relative overflow-hidden rounded-[28px] bg-neutral-200"
             >
-              <div className="relative aspect-[16/5] overflow-hidden">
+              <div className="relative aspect-[1/1] overflow-hidden">
                 <img
                   src={feed.image}
                   alt={`${feed.name} 인증`}
@@ -209,24 +209,20 @@ export default function Page() {
                           </div>
                         )}
                       </div>
-
-                      <span className="ml-2 text-[11px] font-medium text-white drop-shadow">
-                        인정
-                      </span>
                     </div>
                   ) : (
                     <div className="rounded-full bg-black/25 px-3 py-2 text-[11px] font-medium text-white backdrop-blur-md">
-                      아직 아무도 인정하지 않았어요
+                      x
                     </div>
                   )}
                 </div>
 
                 {/* 인정 버튼 */}
-                <div className="absolute bottom-3 right-3 flex gap-2">
+                <div className="absolute bottom-3 right-3 flex flex-col gap-2">
                   {/* 인정 */}
                   <button
                     onClick={() => toggleApprove(feed.id)}
-                    className={`flex h-12 w-12 items-center justify-center rounded-full border transition-all ${
+                    className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
                       isApproved
                         ? "border-white bg-white text-black"
                         : "border-white/40 bg-black/20 text-white backdrop-blur-md"
@@ -242,7 +238,7 @@ export default function Page() {
                       setRejectFeedId(feed.id);
                       setRejectSheetOpen(true);
                     }}
-                    className={`flex h-12 w-12 items-center justify-center rounded-full border transition-all ${
+                    className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
                       isRejected
                         ? "border-red-500 bg-red-500 text-white"
                         : "border-white/40 bg-black/20 text-white backdrop-blur-md"
@@ -259,14 +255,10 @@ export default function Page() {
 
         {/* 내 인증 */}
 
-        <Link href="/camera" className="group flex aspect-[16/5] items-center justify-between rounded-[28px] bg-white px-5 text-left transition active:scale-[0.99]">
+        <Link href="/camera" className="group flex aspect-[1/1] items-center justify-between rounded-[28px] bg-white px-5 text-left transition active:scale-[0.99]">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
               My turn
-            </p>
-
-            <p className="mt-1 text-lg font-bold tracking-[-0.04em]">
-              오늘 인증 남기기
             </p>
           </div>
 

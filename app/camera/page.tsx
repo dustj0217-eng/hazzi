@@ -1,10 +1,35 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type CameraStep = "camera" | "recording" | "preview" | "complete";
+type CameraStep =
+  | "requesting"
+  | "camera"
+  | "recording"
+  | "preview"
+  | "uploading"
+  | "complete"
+  | "error";
 
-const rooms = [
+type CameraFacing = "user" | "environment";
+
+type Room = {
+  id: number;
+  name: string;
+  description: string;
+  members: string[];
+};
+
+type UploadResult = {
+  ok: boolean;
+  certificationId?: string;
+  videoUrl?: string;
+  message?: string;
+};
+
+const RECORD_SECONDS = 3;
+
+const rooms: Room[] = [
   {
     id: 1,
     name: "공부방",
@@ -37,93 +62,425 @@ const rooms = [
   },
 ];
 
+function getSupportedMimeType() {
+  if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+    return "";
+  }
+
+  const candidates = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+    "video/mp4",
+  ];
+
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
+function getExtension(mimeType: string) {
+  if (mimeType.includes("mp4")) return "mp4";
+  if (mimeType.includes("ogg")) return "ogv";
+  return "webm";
+}
+
 export default function CameraPage() {
-  const [step, setStep] = useState<CameraStep>("camera");
-  const [selectedRoom, setSelectedRoom] = useState(rooms[0]);
+  const [step, setStep] = useState<CameraStep>("requesting");
+  const [selectedRoom, setSelectedRoom] = useState<Room>(rooms[0]);
   const [roomOpen, setRoomOpen] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState(3);
-  const [cameraFacing, setCameraFacing] = useState<"front" | "back">("back");
+  const [secondsLeft, setSecondsLeft] = useState(RECORD_SECONDS);
+  const [cameraFacing, setCameraFacing] =
+    useState<CameraFacing>("environment");
   const [flashOn, setFlashOn] = useState(false);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (step !== "recording") return;
+  const canUseFlash = useMemo(() => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return false;
 
-    setSecondsLeft(3);
+    const capabilities = track.getCapabilities?.() as
+      | MediaTrackCapabilities & { torch?: boolean }
+      | undefined;
 
-    timerRef.current = setInterval(() => {
-      setSecondsLeft((current) => {
-        if (current <= 1) {
-          if (timerRef.current) {
-            clearInterval(timerRef.current);
-          }
+    return Boolean(capabilities?.torch);
+  }, [step, cameraFacing]);
 
-          setStep("preview");
-          return 0;
+  const clearTimers = useCallback(() => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
+  }, []);
+
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = null;
+    }
+  }, []);
+
+  const revokePreviewUrl = useCallback(() => {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+    }
+  }, [previewUrl]);
+
+  const showError = useCallback(
+    (message: string) => {
+      clearTimers();
+      setErrorMessage(message);
+      setStep("error");
+    },
+    [clearTimers]
+  );
+
+  const startCamera = useCallback(
+    async (facing: CameraFacing = cameraFacing) => {
+      try {
+        setStep("requesting");
+        setErrorMessage("");
+        clearTimers();
+        stopStream();
+
+        if (
+          !navigator.mediaDevices?.getUserMedia ||
+          typeof MediaRecorder === "undefined"
+        ) {
+          throw new Error(
+            "이 브라우저에서는 카메라 녹화를 지원하지 않습니다. 최신 Chrome 또는 Safari로 다시 시도해 주세요."
+          );
         }
 
-        return current - 1;
-      });
-    }, 1000);
+        const constraints: MediaStreamConstraints = {
+          audio: true,
+          video: {
+            facingMode: { ideal: facing },
+            width: { ideal: 1080 },
+            height: { ideal: 1920 },
+            aspectRatio: { ideal: 9 / 16 },
+          },
+        };
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        streamRef.current = stream;
+
+        if (liveVideoRef.current) {
+          liveVideoRef.current.srcObject = stream;
+          await liveVideoRef.current.play().catch(() => undefined);
+        }
+
+        setFlashOn(false);
+        setStep("camera");
+      } catch (error) {
+        const domError = error as DOMException | Error;
+
+        if (
+          "name" in domError &&
+          (domError.name === "NotAllowedError" ||
+            domError.name === "PermissionDeniedError")
+        ) {
+          showError(
+            "카메라 또는 마이크 권한이 꺼져 있습니다. 브라우저 주소창의 권한 설정에서 카메라와 마이크를 허용해 주세요."
+          );
+          return;
+        }
+
+        if ("name" in domError && domError.name === "NotFoundError") {
+          showError("사용할 수 있는 카메라를 찾지 못했습니다.");
+          return;
+        }
+
+        showError(
+          domError.message ||
+            "카메라를 시작하지 못했습니다. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+        );
+      }
+    },
+    [cameraFacing, clearTimers, showError, stopStream]
+  );
+
+  useEffect(() => {
+    void startCamera("environment");
 
     return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      clearTimers();
+      stopStream();
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
+    // initial mount only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!liveVideoRef.current || !streamRef.current) return;
+    liveVideoRef.current.srcObject = streamRef.current;
   }, [step]);
 
-  const startRecording = () => {
-    setStep("recording");
+  const toggleCamera = async () => {
+    if (step === "recording" || step === "uploading") return;
+
+    const nextFacing: CameraFacing =
+      cameraFacing === "user" ? "environment" : "user";
+
+    setCameraFacing(nextFacing);
+    await startCamera(nextFacing);
+  };
+
+  const toggleFlash = async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+
+    const capabilities = track.getCapabilities?.() as
+      | MediaTrackCapabilities & { torch?: boolean }
+      | undefined;
+
+    if (!capabilities?.torch) {
+      setErrorMessage("현재 카메라는 플래시를 지원하지 않습니다.");
+      return;
+    }
+
+    try {
+      const next = !flashOn;
+      await track.applyConstraints({
+        advanced: [{ torch: next } as MediaTrackConstraintSet],
+      });
+      setFlashOn(next);
+      setErrorMessage("");
+    } catch {
+      setErrorMessage("플래시를 변경하지 못했습니다.");
+    }
+  };
+
+  const stopRecording = useCallback(() => {
+    clearTimers();
+
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+  }, [clearTimers]);
+
+  const startRecording = async () => {
+    const stream = streamRef.current;
+
+    if (!stream) {
+      showError("카메라가 준비되지 않았습니다.");
+      return;
+    }
+
+    try {
+      revokePreviewUrl();
+      setPreviewUrl("");
+      setRecordedBlob(null);
+      setUploadResult(null);
+      setUploadProgress(0);
+      setErrorMessage("");
+      chunksRef.current = [];
+
+      const mimeType = getSupportedMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, {
+            mimeType,
+            videoBitsPerSecond: 2_500_000,
+            audioBitsPerSecond: 128_000,
+          })
+        : new MediaRecorder(stream);
+
+      recorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        showError("영상 녹화 중 오류가 발생했습니다.");
+      };
+
+      recorder.onstop = () => {
+        clearTimers();
+
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "video/webm",
+        });
+
+        if (blob.size === 0) {
+          showError("녹화된 영상이 비어 있습니다. 다시 촬영해 주세요.");
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        setRecordedBlob(blob);
+        setPreviewUrl(url);
+        setSecondsLeft(RECORD_SECONDS);
+        setStep("preview");
+
+        requestAnimationFrame(() => {
+          if (previewVideoRef.current) {
+            previewVideoRef.current.src = url;
+            void previewVideoRef.current.play().catch(() => undefined);
+          }
+        });
+      };
+
+      recorder.start(250);
+      setSecondsLeft(RECORD_SECONDS);
+      setStep("recording");
+
+      countdownRef.current = setInterval(() => {
+        setSecondsLeft((current) => Math.max(0, current - 1));
+      }, 1000);
+
+      stopTimeoutRef.current = setTimeout(() => {
+        stopRecording();
+      }, RECORD_SECONDS * 1000);
+    } catch (error) {
+      showError(
+        error instanceof Error
+          ? error.message
+          : "녹화를 시작하지 못했습니다."
+      );
+    }
   };
 
   const cancelRecording = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
+    chunksRef.current = [];
+    stopRecording();
+    setRecordedBlob(null);
+    setSecondsLeft(RECORD_SECONDS);
+    setStep("camera");
+  };
+
+  const retake = async () => {
+    revokePreviewUrl();
+    setPreviewUrl("");
+    setRecordedBlob(null);
+    setUploadResult(null);
+    setUploadProgress(0);
+    setSecondsLeft(RECORD_SECONDS);
+    setStep("camera");
+
+    if (!streamRef.current) {
+      await startCamera(cameraFacing);
+    }
+  };
+
+  const uploadCertification = async () => {
+    if (!recordedBlob) {
+      showError("업로드할 영상이 없습니다.");
+      return;
     }
 
-    setSecondsLeft(3);
-    setStep("camera");
+    try {
+      setStep("uploading");
+      setUploadProgress(15);
+      setErrorMessage("");
+
+      const mimeType = recordedBlob.type || "video/webm";
+      const extension = getExtension(mimeType);
+      const file = new File(
+        [recordedBlob],
+        `certification-${Date.now()}.${extension}`,
+        { type: mimeType }
+      );
+
+      const formData = new FormData();
+      formData.append("video", file);
+      formData.append("roomId", String(selectedRoom.id));
+      formData.append("roomName", selectedRoom.name);
+      formData.append("durationSeconds", String(RECORD_SECONDS));
+
+      setUploadProgress(45);
+
+      const response = await fetch("/api/certifications", {
+        method: "POST",
+        body: formData,
+      });
+
+      setUploadProgress(85);
+
+      const result = (await response.json()) as UploadResult;
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || "인증 업로드에 실패했습니다.");
+      }
+
+      setUploadResult(result);
+      setUploadProgress(100);
+      stopStream();
+      setStep("complete");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "인증 업로드에 실패했습니다."
+      );
+      setStep("preview");
+    }
   };
 
-  const retake = () => {
-    setSecondsLeft(3);
-    setStep("camera");
-  };
-
-  const submitCertification = () => {
-    setStep("complete");
-  };
-
-  const goBackToCamera = () => {
-    setSecondsLeft(3);
-    setStep("camera");
+  const goBackToCamera = async () => {
+    revokePreviewUrl();
+    setPreviewUrl("");
+    setRecordedBlob(null);
+    setUploadResult(null);
+    setUploadProgress(0);
+    setSecondsLeft(RECORD_SECONDS);
+    await startCamera(cameraFacing);
   };
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-black text-white">
-      {/* Camera Preview */}
-
+    <main className="relative min-h-[100dvh] overflow-hidden bg-black text-white">
       <div className="absolute inset-0">
-        <img
-          src="/images/camera-sample.jpg"
-          alt="카메라 미리보기"
-          className="h-full w-full object-cover"
+        <video
+          ref={liveVideoRef}
+          autoPlay
+          muted
+          playsInline
+          className={`h-full w-full object-cover ${
+            cameraFacing === "user" ? "-scale-x-100" : ""
+          }`}
         />
 
+        {previewUrl && (
+          <video
+            ref={previewVideoRef}
+            src={previewUrl}
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        )}
+
         <div className="absolute inset-0 bg-black/10" />
-
         <div className="absolute inset-x-0 top-0 h-52 bg-gradient-to-b from-black/65 to-transparent" />
-
         <div className="absolute inset-x-0 bottom-0 h-80 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
       </div>
 
-      {/* Top Header */}
-
-      <header className="relative z-20 flex items-center justify-between px-5 pb-4 pt-5">
+      <header className="relative z-20 flex items-center justify-between px-5 pb-4 pt-[max(1.25rem,env(safe-area-inset-top))]">
         <button
-          onClick={() => history.back()}
+          onClick={() => window.history.back()}
           className="flex h-11 w-11 items-center justify-center rounded-full bg-black/25 backdrop-blur-xl"
           aria-label="뒤로 가기"
         >
@@ -140,12 +497,13 @@ export default function CameraPage() {
 
         <button
           onClick={() => setRoomOpen(true)}
-          className="flex items-center gap-2 rounded-full bg-black/25 py-2 pl-2 pr-4 backdrop-blur-xl"
+          disabled={step === "recording" || step === "uploading"}
+          className="flex items-center gap-2 rounded-full bg-black/25 py-2 pl-2 pr-4 backdrop-blur-xl disabled:opacity-50"
         >
           <div className="flex -space-x-2">
             {selectedRoom.members.slice(0, 3).map((member, index) => (
               <img
-                key={index}
+                key={`${member}-${index}`}
                 src={member}
                 alt=""
                 className="h-7 w-7 rounded-full border-2 border-black/30 object-cover"
@@ -167,50 +525,41 @@ export default function CameraPage() {
         </button>
 
         <button
-          onClick={() => setFlashOn((current) => !current)}
-          className={`flex h-11 w-11 items-center justify-center rounded-full backdrop-blur-xl ${
+          onClick={() => void toggleFlash()}
+          disabled={!canUseFlash || step === "recording"}
+          className={`flex h-11 w-11 items-center justify-center rounded-full backdrop-blur-xl disabled:opacity-35 ${
             flashOn ? "bg-white text-black" : "bg-black/25 text-white"
           }`}
           aria-label="플래시"
         >
-          <svg
-            viewBox="0 0 24 24"
-            className="h-5 w-5"
-            fill="currentColor"
-          >
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
             <path d="M13 2L5 14h6l-1 8 9-13h-6V2z" />
           </svg>
         </button>
       </header>
 
-      {/* Guide */}
-
       {(step === "camera" || step === "recording") && (
-        <section className="absolute inset-x-0 top-28 z-10 flex justify-center px-5">
-          <div className="rounded-full bg-black/20 px-4 py-2 text-center backdrop-blur-md">
-            <p className="text-sm font-medium text-white">
-              {step === "recording"
-                ? `${secondsLeft}초`
-                : selectedRoom.description}
-            </p>
+        <>
+          <section className="absolute inset-x-0 top-28 z-10 flex justify-center px-5">
+            <div className="rounded-full bg-black/20 px-4 py-2 text-center backdrop-blur-md">
+              <p className="text-sm font-medium">
+                {step === "recording"
+                  ? `${Math.max(secondsLeft, 0)}초`
+                  : selectedRoom.description}
+              </p>
+            </div>
+          </section>
+
+          <div className="pointer-events-none absolute inset-x-5 bottom-52 top-24 z-10">
+            <div className="relative h-full w-full">
+              <span className="absolute left-0 top-0 h-8 w-8 border-l border-t border-white/80" />
+              <span className="absolute right-0 top-0 h-8 w-8 border-r border-t border-white/80" />
+              <span className="absolute bottom-0 left-0 h-8 w-8 border-b border-l border-white/80" />
+              <span className="absolute bottom-0 right-0 h-8 w-8 border-b border-r border-white/80" />
+            </div>
           </div>
-        </section>
+        </>
       )}
-
-      {/* Focus Frame */}
-
-      {(step === "camera" || step === "recording") && (
-        <div className="pointer-events-none absolute inset-x-5 bottom-52 top-24 z-10">
-          <div className="relative h-full w-full">
-            <span className="absolute left-0 top-0 h-8 w-8 border-l border-t border-white/80" />
-            <span className="absolute right-0 top-0 h-8 w-8 border-r border-t border-white/80" />
-            <span className="absolute bottom-0 left-0 h-8 w-8 border-b border-l border-white/80" />
-            <span className="absolute bottom-0 right-0 h-8 w-8 border-b border-r border-white/80" />
-          </div>
-        </div>
-      )}
-
-      {/* Recording Indicator */}
 
       {step === "recording" && (
         <div className="absolute left-1/2 top-24 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/35 px-4 py-2 backdrop-blur-lg">
@@ -221,25 +570,69 @@ export default function CameraPage() {
         </div>
       )}
 
-      {/* Preview Overlay */}
+      {step === "requesting" && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black px-6">
+          <div className="text-center">
+            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            <p className="mt-5 text-sm font-semibold">카메라를 준비하고 있어요</p>
+            <p className="mt-2 text-xs text-white/50">
+              카메라와 마이크 권한을 허용해 주세요
+            </p>
+          </div>
+        </div>
+      )}
 
-      {step === "preview" && (
+      {step === "error" && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black px-5">
+          <div className="w-full max-w-sm rounded-[28px] bg-white p-6 text-black">
+            <p className="text-xs font-semibold tracking-[0.16em] text-neutral-400">
+              CAMERA ERROR
+            </p>
+            <h1 className="mt-2 text-2xl font-bold tracking-[-0.05em]">
+              카메라를 열 수 없어요
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-neutral-500">
+              {errorMessage}
+            </p>
+
+            <button
+              onClick={() => void startCamera(cameraFacing)}
+              className="mt-6 h-14 w-full rounded-2xl bg-black text-sm font-bold text-white"
+            >
+              다시 시도
+            </button>
+
+            <button
+              onClick={() => window.history.back()}
+              className="mt-2 h-12 w-full text-sm font-semibold text-neutral-400"
+            >
+              이전 화면으로
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(step === "preview" || step === "uploading") && (
         <div className="absolute inset-0 z-20 flex flex-col justify-between bg-black/15">
-          <div className="px-5 pt-6">
+          <div className="px-5 pt-[max(1.5rem,env(safe-area-inset-top))]">
             <div className="mx-auto flex w-fit items-center gap-2 rounded-full bg-black/30 px-4 py-2 backdrop-blur-lg">
               <span className="h-2 w-2 rounded-full bg-white" />
-              <span className="text-sm font-semibold">3초 인증 준비 완료</span>
+              <span className="text-sm font-semibold">
+                {step === "uploading"
+                  ? "인증을 보내고 있어요"
+                  : "3초 인증 준비 완료"}
+              </span>
             </div>
           </div>
 
-          <div className="px-5 pb-10">
+          <div className="px-5 pb-[max(2.5rem,env(safe-area-inset-bottom))]">
             <div className="rounded-[28px] bg-black/45 p-4 backdrop-blur-2xl">
               <div className="mb-4 flex items-center justify-between px-1">
                 <div className="flex items-center gap-3">
                   <div className="flex -space-x-2">
                     {selectedRoom.members.slice(0, 3).map((member, index) => (
                       <img
-                        key={index}
+                        key={`${member}-${index}`}
                         src={member}
                         alt=""
                         className="h-8 w-8 rounded-full border-2 border-black/30 object-cover"
@@ -260,27 +653,45 @@ export default function CameraPage() {
                 </span>
               </div>
 
-              <div className="grid grid-cols-[1fr_1.7fr] gap-2">
-                <button
-                  onClick={retake}
-                  className="h-14 rounded-2xl bg-white/10 text-sm font-semibold text-white"
-                >
-                  다시 찍기
-                </button>
+              {errorMessage && (
+                <p className="mb-3 rounded-xl bg-red-500/20 px-3 py-2 text-xs text-red-100">
+                  {errorMessage}
+                </p>
+              )}
 
-                <button
-                  onClick={submitCertification}
-                  className="h-14 rounded-2xl bg-white text-sm font-bold text-black"
-                >
-                  이대로 인증
-                </button>
-              </div>
+              {step === "uploading" ? (
+                <div className="py-3">
+                  <div className="h-2 overflow-hidden rounded-full bg-white/15">
+                    <div
+                      className="h-full rounded-full bg-white transition-all duration-300"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="mt-3 text-center text-xs text-white/60">
+                    {uploadProgress}% 업로드 중
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-[1fr_1.7fr] gap-2">
+                  <button
+                    onClick={() => void retake()}
+                    className="h-14 rounded-2xl bg-white/10 text-sm font-semibold"
+                  >
+                    다시 찍기
+                  </button>
+
+                  <button
+                    onClick={() => void uploadCertification()}
+                    className="h-14 rounded-2xl bg-white text-sm font-bold text-black"
+                  >
+                    이대로 인증
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
-
-      {/* Completed */}
 
       {step === "complete" && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/65 px-5 backdrop-blur-xl">
@@ -290,7 +701,6 @@ export default function CameraPage() {
                 <p className="text-xs font-semibold tracking-[0.16em] text-neutral-400">
                   CERTIFIED
                 </p>
-
                 <h1 className="mt-2 text-3xl font-bold tracking-[-0.06em]">
                   인증을 보냈어요
                 </h1>
@@ -321,7 +731,7 @@ export default function CameraPage() {
                 <div className="flex -space-x-2">
                   {selectedRoom.members.slice(0, 3).map((member, index) => (
                     <img
-                      key={index}
+                      key={`${member}-${index}`}
                       src={member}
                       alt=""
                       className="h-9 w-9 rounded-full border-2 border-[#f4f4f4] object-cover"
@@ -330,6 +740,12 @@ export default function CameraPage() {
                 </div>
               </div>
             </div>
+
+            {uploadResult?.certificationId && (
+              <p className="mt-3 text-center text-[11px] text-neutral-400">
+                인증 번호: {uploadResult.certificationId}
+              </p>
+            )}
 
             <button
               onClick={() => {
@@ -341,7 +757,7 @@ export default function CameraPage() {
             </button>
 
             <button
-              onClick={goBackToCamera}
+              onClick={() => void goBackToCamera()}
               className="mt-2 h-12 w-full text-sm font-semibold text-neutral-400"
             >
               다른 방도 인증하기
@@ -350,23 +766,10 @@ export default function CameraPage() {
         </div>
       )}
 
-      {/* Camera Controls */}
-
       {(step === "camera" || step === "recording") && (
-        <section className="absolute inset-x-0 bottom-0 z-20 pb-8">
+        <section className="absolute inset-x-0 bottom-0 z-20 pb-[max(2rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto flex max-w-md items-center justify-between px-8">
-            <button
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-black/30 backdrop-blur-xl"
-              aria-label="최근 촬영 영상"
-            >
-              <div className="h-8 w-8 overflow-hidden rounded-xl bg-neutral-700">
-                <img
-                  src="/images/sample1.jpg"
-                  alt=""
-                  className="h-full w-full object-cover"
-                />
-              </div>
-            </button>
+            <div className="h-12 w-12" />
 
             {step === "recording" ? (
               <button
@@ -380,7 +783,7 @@ export default function CameraPage() {
               </button>
             ) : (
               <button
-                onClick={startRecording}
+                onClick={() => void startRecording()}
                 className="relative flex h-24 w-24 items-center justify-center rounded-full border border-white/45"
                 aria-label="촬영 시작"
               >
@@ -391,12 +794,9 @@ export default function CameraPage() {
             )}
 
             <button
-              onClick={() =>
-                setCameraFacing((current) =>
-                  current === "front" ? "back" : "front"
-                )
-              }
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-black/30 backdrop-blur-xl"
+              onClick={() => void toggleCamera()}
+              disabled={step === "recording"}
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-black/30 backdrop-blur-xl disabled:opacity-40"
               aria-label="카메라 전환"
             >
               <svg
@@ -421,8 +821,6 @@ export default function CameraPage() {
         </section>
       )}
 
-      {/* Room Sheet */}
-
       {roomOpen && (
         <>
           <button
@@ -432,7 +830,7 @@ export default function CameraPage() {
           />
 
           <section className="fixed bottom-0 left-0 right-0 z-50">
-            <div className="mx-auto max-w-md rounded-t-[34px] bg-white px-5 pb-10 pt-4 text-black">
+            <div className="mx-auto max-w-md rounded-t-[34px] bg-white px-5 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-4 text-black">
               <div className="mx-auto mb-7 h-1 w-10 rounded-full bg-neutral-200" />
 
               <div className="mb-5">
@@ -464,7 +862,7 @@ export default function CameraPage() {
                         <div className="flex -space-x-2">
                           {room.members.slice(0, 3).map((member, index) => (
                             <img
-                              key={index}
+                              key={`${member}-${index}`}
                               src={member}
                               alt=""
                               className={`h-10 w-10 rounded-full border-2 object-cover ${
