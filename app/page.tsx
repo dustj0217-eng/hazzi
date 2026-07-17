@@ -108,11 +108,27 @@ export default function Page() {
   };
 
   return (
-    <main className="min-h-screen bg-[#f4f4f4] pb-32 text-[#111111]">
-      {/* Header */}
+    <main className="relative min-h-screen pb-22 text-[#111111]">
+      {/* 고정 배경 */}
+      <div
+        className="fixed inset-0 -z-20"
+        style={{
+          backgroundColor: "#FFFFFF",
+          backgroundImage:
+            "linear-gradient(rgba(73, 109, 142, 0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(73, 109, 142, 0.10) 1px, transparent 1px)",
+          backgroundSize: "22px 22px",
+        }}
+      />
 
-      <header className="sticky top-0 z-30 bg-[#f4f4f4]/90 backdrop-blur-xl">
+      {/* Header */}
+      <header className="sticky top-0 z-30 backdrop-blur-xl">
         <div className="mx-auto flex max-w-md items-center justify-between px-4 pb-3 pt-5">
+          <img
+            src="/images/logo.png"
+            alt="logo"
+            width={200}
+            height={50}
+          />
           <button
             onClick={() => setRoomOpen(true)}
             className="flex items-center gap-2 rounded-full bg-white px-3 py-2 shadow-sm"
@@ -136,17 +152,6 @@ export default function Page() {
             </span>
 
             <span className="text-xs text-neutral-400">⌄</span>
-          </button>
-
-          <img
-            src="/images/logo.png"
-            alt="logo"
-            width={200}
-            height={50}
-          />
-
-          <button className="flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm">
-            <span className="h-2 w-2 rounded-full bg-pink-500" />
           </button>
         </div>
       </header>
@@ -218,14 +223,14 @@ export default function Page() {
                 </div>
 
                 {/* 인정 버튼 */}
-                <div className="absolute bottom-3 right-3 flex flex-col gap-2">
+                <div className="absolute bottom-3 right-3 flex flex-col">
                   {/* 인정 */}
                   <button
                     onClick={() => toggleApprove(feed.id)}
-                    className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
+                    className={`flex h-8 w-8 items-center justify-center rounded-full border transition-all ${
                       isApproved
                         ? "border-white bg-white text-black"
-                        : "border-white/40 bg-black/20 text-white backdrop-blur-md"
+                        : "border-white/40 bg-white/20 text-white backdrop-blur-md"
                     }`}
                     aria-label="인정하기"
                   >
@@ -238,10 +243,10 @@ export default function Page() {
                       setRejectFeedId(feed.id);
                       setRejectSheetOpen(true);
                     }}
-                    className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
+                    className={`flex h-8 w-8 items-center justify-center rounded-full border transition-all ${
                       isRejected
                         ? "border-red-500 bg-red-500 text-white"
-                        : "border-white/40 bg-black/20 text-white backdrop-blur-md"
+                        : "border-white/40 bg-white/20 text-white backdrop-blur-md"
                     }`}
                     aria-label="인정 안하기"
                   >
@@ -335,7 +340,7 @@ export default function Page() {
                       }}
                       className={`flex w-full items-center justify-between rounded-2xl px-4 py-4 transition ${
                         active
-                          ? "bg-black text-white"
+                          ? "bg-[#ff00ff] text-white"
                           : "bg-[#f4f4f4] text-black"
                       }`}
                     >

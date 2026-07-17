@@ -215,10 +215,19 @@ export default function MyPage() {
   };
 
   return (
-    <main className="min-h-screen bg-[#f4f4f4] pb-32 text-[#111111]">
+    <main className="min-h-screen pb-32 text-[#111111]">
+      <div
+        className="fixed inset-0 -z-20"
+        style={{
+          backgroundColor: "#FFFFFF",
+          backgroundImage:
+            "linear-gradient(rgba(73, 109, 142, 0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(73, 109, 142, 0.10) 1px, transparent 1px)",
+          backgroundSize: "22px 22px",
+        }}
+      />
       {/* Header */}
 
-      <header className="sticky top-0 z-30 bg-[#f4f4f4]/90 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 bg-[#ffffff]/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-md items-center justify-between px-5 pb-4 pt-5">
           <div>
             <p className="text-[11px] font-semibold tracking-[0.18em] text-neutral-400">
