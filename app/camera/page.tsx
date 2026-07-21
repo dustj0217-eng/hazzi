@@ -1,3 +1,5 @@
+// app/camera/page.tsx
+
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
