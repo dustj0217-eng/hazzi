@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
 type RoomStatus =
   | "approved"
@@ -26,6 +28,17 @@ type CalendarDay = {
   status: CalendarStatus;
   completed: number;
   total: number;
+};
+
+type Profile = {
+  id: string;
+  username: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  bio: string | null;
+  onboarding_completed: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 const calendarDays: CalendarDay[] = Array.from({ length: 31 }, (_, index) => {
@@ -68,71 +81,6 @@ const calendarStatusLabel: Record<CalendarStatus, string> = {
   missed: "인증 부족",
   future: "예정",
 };
-
-const initialRooms: Room[] = [
-  {
-    id: 1,
-    name: "공부방",
-    streak: 12,
-    status: "approved",
-    cover: "/images/sample1.jpg",
-    members: [
-      "/images/profile1.jpg",
-      "/images/profile2.jpg",
-      "/images/profile3.jpg",
-      "/images/profile4.jpg",
-    ],
-    approved: [
-      "/images/profile2.jpg",
-      "/images/profile3.jpg",
-      "/images/profile4.jpg",
-    ],
-    time: "매일 자정 전",
-  },
-  {
-    id: 2,
-    name: "운동방",
-    streak: 4,
-    status: "waiting",
-    cover: "/images/sample2.jpg",
-    members: [
-      "/images/profile1.jpg",
-      "/images/profile3.jpg",
-      "/images/profile5.jpg",
-    ],
-    approved: ["/images/profile3.jpg"],
-    time: "매일 오후 10시 전",
-  },
-  {
-    id: 3,
-    name: "친구방",
-    streak: 7,
-    status: "not-started",
-    cover: "/images/sample3.jpg",
-    members: [
-      "/images/profile1.jpg",
-      "/images/profile2.jpg",
-      "/images/profile5.jpg",
-      "/images/profile6.jpg",
-    ],
-    approved: [],
-    time: "매일 자정 전",
-  },
-  {
-    id: 4,
-    name: "아침 기상",
-    streak: 2,
-    status: "retry",
-    cover: "/images/sample4.jpg",
-    members: [
-      "/images/profile1.jpg",
-      "/images/profile4.jpg",
-      "/images/profile6.jpg",
-    ],
-    approved: [],
-    time: "매일 오전 8시 전",
-  },
-];
 
 const discoverRooms = [
   {
@@ -178,24 +126,170 @@ const statusLabel: Record<RoomStatus, string> = {
 };
 
 export default function MyPage() {
-  const [rooms, setRooms] = useState(initialRooms);
+  const router = useRouter();
+
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(true);
+  const [roomsError, setRoomsError] = useState("");
+
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [joinedRoomIds, setJoinedRoomIds] = useState<number[]>([]);
+
+  const [createRoomOpen, setCreateRoomOpen] = useState(false);
+
+  const [newRoomTitle, setNewRoomTitle] = useState("");
+  const [newRoomDescription, setNewRoomDescription] = useState("");
+  const [newRoomTime, setNewRoomTime] = useState("");
+  const [creatingRoom, setCreatingRoom] = useState(false);
+
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [userEmail, setUserEmail] = useState("");
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadPageData() {
+      setProfileLoading(true);
+      setRoomsLoading(true);
+      setProfileError("");
+      setRoomsError("");
+
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (!mounted) return;
+
+      if (userError || !user) {
+        router.replace("/login");
+        return;
+      }
+
+      setUserEmail(user.email ?? "");
+
+      const [profileResult, roomsResult] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select(
+            "id, username, display_name, avatar_url, bio, onboarding_completed, created_at, updated_at"
+          )
+          .eq("id", user.id)
+          .maybeSingle(),
+
+        supabase
+          .from("rooms")
+          .select(
+            "id, title, description, cover_url, owner_id, verification_time, created_at, room_members!inner(user_id, role)"
+          )
+          .eq("room_members.user_id", user.id)
+          .order("created_at", { ascending: false }),
+      ]);
+
+      if (!mounted) return;
+
+      if (profileResult.error) {
+        console.error("프로필 조회 오류:", profileResult.error);
+        setProfileError("프로필 정보를 불러오지 못했습니다.");
+      } else {
+        setProfile(profileResult.data);
+      }
+
+      if (roomsResult.error) {
+        console.error("방 목록 조회 오류:", roomsResult.error);
+        setRoomsError("방 목록을 불러오지 못했습니다.");
+      } else {
+        const mappedRooms: Room[] = (roomsResult.data ?? []).map((room) => ({
+          id: room.id,
+          name: room.title,
+          streak: 1,
+          status: "not-started",
+          cover: room.cover_url || "/images/sample1.jpg",
+          members: [],
+          approved: [],
+          time: room.verification_time || "인증 시간 미정",
+        }));
+
+        setRooms(mappedRooms);
+      }
+
+      setProfileLoading(false);
+      setRoomsLoading(false);
+    }
+
+    loadPageData();
+
+    return () => {
+      mounted = false;
+    };
+  }, [router]);
+
+  async function handleLogout() {
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      alert("로그아웃에 실패했습니다.");
+      return;
+    }
+
+    router.replace("/login");
+    router.refresh();
+  }
+
+  async function handleCreateRoom() {
+    if (!newRoomTitle.trim()) {
+      return;
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+
+    if (!user) {
+      alert("로그인이 필요합니다.");
+      return;
+    }
+
+
+    const { error } = await supabase
+      .from("rooms")
+      .insert({
+        title: newRoomTitle,
+        description: newRoomDescription,
+        owner_id: user.id,
+      });
+
+
+    if (error) {
+      console.error(error);
+      alert("방 만들기에 실패했습니다.");
+      return;
+    }
+
+
+    setCreateRoomOpen(false);
+
+    setNewRoomTitle("");
+    setNewRoomDescription("");
+  }
+
+  const displayName =
+    profile?.display_name?.trim() ||
+    profile?.username?.trim() ||
+    userEmail.split("@")[0] ||
+    "사용자";
+
+  const avatarUrl = profile?.avatar_url?.trim() || "";
+
   const [selectedDate, setSelectedDate] = useState<CalendarDay | null>(
     calendarDays.find((date) => date.day === 18) ?? null
   );
 
-  const completedCount = rooms.filter(
-    (room) => room.status === "approved" || room.status === "waiting"
-  ).length;
-
-  const progress = Math.round((completedCount / rooms.length) * 100);
-
-  const completedDays = calendarDays.filter(
-    (date) => date.day <= 18 && date.status === "complete"
-  ).length;
 
   const activeDays = calendarDays.filter(
     (date) => date.day <= 18 && date.status !== "missed"
@@ -234,9 +328,37 @@ export default function MyPage() {
               MY
             </p>
 
-            <h1 className="mt-1 text-3xl font-bold tracking-[-0.07em]">
-              대범
-            </h1>
+            <div className="mt-1 flex items-center gap-3">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={`${displayName} 프로필`}
+                  className="h-11 w-11 rounded-full border border-neutral-200 object-cover"
+                />
+              ) : (
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[#ff00ff] text-base font-black text-white">
+                  {displayName.slice(0, 1).toUpperCase()}
+                </div>
+              )}
+
+              <div>
+                <h1 className="text-3xl font-bold tracking-[-0.07em]">
+                  {profileLoading ? "불러오는 중..." : displayName}
+                </h1>
+
+                {profileError ? (
+                  <p className="mt-1 text-xs font-medium text-red-500">
+                    {profileError}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-neutral-400">
+                    {profile?.username
+                      ? `@${profile.username}`
+                      : userEmail || "로그인된 사용자"}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
 
           <button
@@ -348,7 +470,7 @@ export default function MyPage() {
           </div>
 
           <button
-            onClick={() => setDiscoverOpen(true)}
+            onClick={() => setCreateRoomOpen(true)}
             className="flex h-10 items-center gap-2 rounded-full bg-white px-4 text-sm font-semibold"
           >
             <span>새 방</span>
@@ -368,6 +490,27 @@ export default function MyPage() {
         {/* Rooms */}
 
         <section className="space-y-3">
+          {roomsLoading && (
+            <div className="rounded-[28px] bg-white p-6 text-center text-sm font-medium text-neutral-400">
+              방 목록을 불러오는 중...
+            </div>
+          )}
+
+          {!roomsLoading && roomsError && (
+            <div className="rounded-[28px] bg-white p-6 text-center text-sm font-medium text-red-500">
+              {roomsError}
+            </div>
+          )}
+
+          {!roomsLoading && !roomsError && rooms.length === 0 && (
+            <div className="rounded-[28px] bg-white p-6 text-center">
+              <p className="font-bold">아직 참여한 방이 없어요.</p>
+              <p className="mt-1 text-sm text-neutral-400">
+                위의 새 방 버튼을 눌러 첫 습관방을 만들어보세요.
+              </p>
+            </div>
+          )}
+
           {rooms.map((room) => (
             <button
               key={room.id}
@@ -711,7 +854,38 @@ export default function MyPage() {
                 설정
               </h2>
 
-              <div className="mt-5 space-y-2">
+              <div className="mt-5 rounded-3xl bg-[#f4f4f4] p-4">
+                <div className="flex items-center gap-3">
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt={`${displayName} 프로필`}
+                      className="h-14 w-14 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#ff00ff] text-lg font-black text-white">
+                      {displayName.slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
+
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-bold">
+                      {displayName}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-neutral-400">
+                      {userEmail}
+                    </p>
+                  </div>
+                </div>
+
+                {profile?.bio && (
+                  <p className="mt-4 text-sm leading-6 text-neutral-600">
+                    {profile.bio}
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-3 space-y-2">
                 {[
                   "프로필 편집",
                   "알림 설정",
@@ -735,7 +909,130 @@ export default function MyPage() {
                     </svg>
                   </button>
                 ))}
+
+                <button
+                  onClick={handleLogout}
+                  className="flex h-14 w-full items-center justify-center rounded-2xl bg-black px-4 text-sm font-bold text-white"
+                >
+                  로그아웃
+                </button>
               </div>
+            </div>
+          </section>
+        </>
+      )}
+
+      {createRoomOpen && (
+        <>
+          <button
+            onClick={() => setCreateRoomOpen(false)}
+            className="
+              fixed inset-0 z-40 
+              bg-black/40 
+              backdrop-blur-sm
+            "
+          />
+
+          <section className="fixed bottom-0 left-0 right-0 z-50">
+            <div
+              className="
+                mx-auto 
+                max-w-md 
+                rounded-t-[36px]
+                bg-white
+                px-6
+                pb-8
+                pt-4
+                shadow-2xl
+              "
+            >
+
+              {/* handle */}
+              <div
+                className="
+                  mx-auto
+                  mb-7
+                  h-1.5
+                  w-12
+                  rounded-full
+                  bg-neutral-200
+                "
+              />
+
+
+              <div>
+                <h2 className="text-2xl font-black tracking-tight">
+                  새 방 만들기
+                </h2>
+
+                <p className="mt-2 text-sm text-neutral-500">
+                  함께 인증할 친구들과 새로운 습관을 시작해보세요.
+                </p>
+              </div>
+
+
+              <div className="mt-7 space-y-4">
+
+                <input
+                  value={newRoomTitle}
+                  onChange={(e)=>setNewRoomTitle(e.target.value)}
+                  placeholder="방 이름"
+                  maxLength={20}
+                  className="
+                    h-14
+                    w-full
+                    rounded-2xl
+                    border
+                    border-neutral-200
+                    px-4
+                    text-sm
+                    outline-none
+                    focus:border-black
+                  "
+                />
+
+
+                <textarea
+                  value={newRoomDescription}
+                  onChange={(e)=>setNewRoomDescription(e.target.value)}
+                  placeholder="방을 한 줄로 소개해주세요"
+                  maxLength={50}
+                  className="
+                    min-h-[110px]
+                    w-full
+                    resize-none
+                    rounded-2xl
+                    border
+                    border-neutral-200
+                    p-4
+                    text-sm
+                    outline-none
+                    focus:border-black
+                  "
+                />
+
+              </div>
+
+
+              <button
+                onClick={handleCreateRoom}
+                disabled={!newRoomTitle.trim()}
+                className="
+                  mt-6
+                  h-14
+                  w-full
+                  rounded-2xl
+                  bg-black
+                  font-semibold
+                  text-white
+                  transition
+                  disabled:opacity-40
+                "
+              >
+                만들기
+              </button>
+
+
             </div>
           </section>
         </>
