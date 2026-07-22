@@ -23,16 +23,28 @@ export type HomeFeed = {
   id: string;
   roomId: number;
   userId: string;
+
   display_name: string;
   profileUrl: string | null;
+
   videoPath: string;
   videoUrl: string;
+
   createdAt: string;
+  verificationDate: string;
+
   status: "pending" | "approved" | "rejected";
+
   approvedBy: FeedReviewer[];
   rejectedBy: FeedReviewer[];
+
   myDecision: ReviewDecision | null;
   myReason: string | null;
+};
+
+export type HomeMemberSlot = {
+  member: HomeMember;
+  feed: HomeFeed | null;
 };
 
 export type SubmitReviewInput = {
@@ -44,4 +56,16 @@ export type SubmitReviewInput = {
 export type SubmitReviewResult = {
   decision: ReviewDecision;
   reason: string | null;
+};
+
+export type SendNudgeInput = {
+  roomId: number;
+  receiverId: string;
+  message: string;
+};
+
+export type SendNudgeResult = {
+  id: string;
+  message: string;
+  createdAt: string;
 };

@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import BottomNav from "@/components/nav";
 
 import {
+  getCurrentUser,
   getMyHomeRooms,
   getRoomFeeds,
   removeVerificationReview,
   submitVerificationReview,
+  sendMemberNudge,
 } from "./home.service";
 
 import type {
@@ -118,7 +121,7 @@ function FeedCard({
               )}
             </div>
           ) : (
-            <div className="rounded-full bg-black/25 px-3 py-2 text-[11px] font-medium text-white backdrop-blur-md">
+            <div className="rounded-full bg-black px-3 py-2 text-[11px] font-medium text-[#D8FF5A] backdrop-blur-md">
               아직 인정 없음
             </div>
           )}
@@ -130,7 +133,7 @@ function FeedCard({
             disabled={busy}
             className={`flex h-9 w-9 items-center justify-center rounded-full border transition-all disabled:opacity-50 ${
               isApproved
-                ? "border-white bg-white text-black"
+                ? "border-[#D8FF5A] bg-[#D8FF5A] text-black"
                 : "border-white/40 bg-white/20 text-white backdrop-blur-md"
             }`}
             aria-label="인정하기"
@@ -172,10 +175,69 @@ function FeedCard({
   );
 }
 
+function EmptyMemberCard({
+  member,
+  isMine,
+  onCall,
+}: {
+  member: HomeMember;
+  isMine: boolean;
+  onCall: (member: HomeMember) => void;
+}) {
+  return (
+    <article className="relative flex aspect-square flex-col overflow-hidden rounded-[28px] border border-neutral-200 bg-white">
+      <div className="flex items-center gap-2 p-3">
+        <Avatar
+          member={member}
+          borderClassName="border-neutral-100"
+        />
+
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+          {member.display_name}
+        </span>
+      </div>
+
+      <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-dashed border-neutral-300">
+          <span className="h-2.5 w-2.5 rounded-full bg-neutral-200" />
+        </div>
+
+        <p className="mt-3 text-sm font-bold">
+          아직 인증 전
+        </p>
+
+        <p className="mt-1 text-[10px] text-neutral-400">
+          오늘의 습관, 같이 해볼까요?
+        </p>
+      </div>
+
+      <div className="p-3 pt-0">
+        {isMine ? (
+          <Link
+            href="/camera"
+            className="flex h-10 w-full items-center justify-center rounded-full bg-[#FF00FF] text-xs font-bold text-white transition active:scale-[0.98]"
+          >
+            인증하기
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onCall(member)}
+            className="flex h-10 w-full items-center justify-center rounded-full bg-black text-xs font-bold text-white"
+          >
+            호출하기
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
 export default function HomePageClient() {
   const [rooms, setRooms] = useState<HomeRoom[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
   const [feeds, setFeeds] = useState<HomeFeed[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   const [roomOpen, setRoomOpen] = useState(false);
   const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
@@ -190,6 +252,22 @@ export default function HomePageClient() {
     () => rooms.find((room) => room.id === selectedRoomId) ?? null,
     [rooms, selectedRoomId]
   );
+
+  const memberSlots = useMemo(() => {
+    if (!selectedRoom) {
+      return [];
+    }
+
+    return selectedRoom.members.map((member) => {
+      const feed =
+        feeds.find((item) => item.userId === member.userId) ?? null;
+
+      return {
+        member,
+        feed,
+      };
+    });
+  }, [selectedRoom, feeds]);
 
   const loadFeeds = useCallback(async (roomId: number) => {
     try {
@@ -218,10 +296,14 @@ export default function HomePageClient() {
         setLoading(true);
         setErrorMessage("");
 
-        const myRooms = await getMyHomeRooms();
+        const [user, myRooms] = await Promise.all([
+          getCurrentUser(),
+          getMyHomeRooms(),
+        ]);
 
         if (cancelled) return;
 
+        setCurrentUserId(user.id);
         setRooms(myRooms);
 
         const firstRoomId = myRooms[0]?.id ?? null;
@@ -332,6 +414,30 @@ export default function HomePageClient() {
     setRejectSheetOpen(true);
   };
 
+  /* 호출하기 */
+
+  const handleCallMember = async (member: HomeMember) => {
+    if (!selectedRoomId) return;
+
+    try {
+      setErrorMessage("");
+
+      await sendMemberNudge({
+        roomId: selectedRoomId,
+        receiverId: member.userId,
+        message: "오늘도 같이 인증하자",
+      });
+
+      alert(`${member.display_name}님을 호출했어요.`);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "호출을 보내지 못했습니다."
+      );
+    }
+  };
+
   const submitReject = async (reason: string) => {
     if (!rejectFeed || busyFeedId) return;
 
@@ -439,47 +545,34 @@ export default function HomePageClient() {
             />
           ))}
 
-        {!feedLoading &&
-          feeds.map((feed) => (
-            <FeedCard
-              key={feed.id}
-              feed={feed}
-              busy={busyFeedId === feed.id}
-              onApprove={(targetFeed) => void handleApprove(targetFeed)}
-              onReject={(targetFeed) => void handleRejectOpen(targetFeed)}
-            />
-          ))}
+          {!feedLoading &&
+            memberSlots.map(({ member, feed }) => {
+              if (feed) {
+                return (
+                  <FeedCard
+                    key={member.userId}
+                    feed={feed}
+                    busy={busyFeedId === feed.id}
+                    onApprove={(targetFeed) =>
+                      void handleApprove(targetFeed)
+                    }
+                    onReject={(targetFeed) =>
+                      void handleRejectOpen(targetFeed)
+                    }
+                  />
+                );
+              }
 
-        {!feedLoading && (
-          <Link
-            href="/camera"
-            className="group flex aspect-square items-center justify-between rounded-[28px] bg-white px-5 text-left shadow-sm transition active:scale-[0.99]"
-          >
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
-                My turn
-              </p>
-              <p className="mt-1 text-sm font-bold">오늘 인증하기</p>
-            </div>
-
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#FF00FF]">
-              <span className="relative block h-4 w-4">
-                <span className="absolute left-1/2 top-0 h-full w-[1.5px] -translate-x-1/2 bg-white" />
-                <span className="absolute left-0 top-1/2 h-[1.5px] w-full -translate-y-1/2 bg-white" />
-              </span>
-            </div>
-          </Link>
-        )}
+              return (
+                <EmptyMemberCard
+                  key={member.userId}
+                  member={member}
+                  isMine={member.userId === currentUserId}
+                  onCall={handleCallMember}
+                />
+              );
+            })}
       </section>
-
-      {!feedLoading && feeds.length === 0 && selectedRoom && (
-        <div className="mx-auto max-w-md px-4 pt-8 text-center">
-          <p className="text-lg font-bold">아직 올라온 인증이 없어요</p>
-          <p className="mt-2 text-sm text-neutral-400">
-            첫 인증을 올려 방을 시작해 보세요.
-          </p>
-        </div>
-      )}
 
       {!selectedRoom && (
         <div className="mx-auto max-w-md px-6 pt-20 text-center">
@@ -490,30 +583,7 @@ export default function HomePageClient() {
         </div>
       )}
 
-      <nav className="fixed bottom-4 left-0 right-0 z-30">
-        <div className="mx-auto flex max-w-[280px] items-center justify-between rounded-full bg-[#FF00FF] px-3 py-3 shadow-2xl">
-          <Link
-            href="/"
-            className="flex h-11 min-w-20 items-center justify-center rounded-full bg-white px-5 text-xs font-bold text-black"
-          >
-            HOME
-          </Link>
-
-          <Link
-            href="/camera"
-            className="flex h-14 w-14 items-center justify-center rounded-full border border-white/20 bg-white text-black"
-          >
-            <span className="h-4 w-4 rounded-full border-[3px] border-[#FF00FF]" />
-          </Link>
-
-          <Link
-            href="/my"
-            className="flex h-11 min-w-20 items-center justify-center rounded-full px-5 text-xs font-bold text-white/55"
-          >
-            MY
-          </Link>
-        </div>
-      </nav>
+      <BottomNav />
 
       {roomOpen && (
         <>
@@ -537,13 +607,6 @@ export default function HomePageClient() {
                     볼 방 선택
                   </h2>
                 </div>
-
-                <Link
-                  href="/rooms"
-                  className="text-sm font-semibold text-neutral-400"
-                >
-                  새 방
-                </Link>
               </div>
 
               <div className="space-y-2">

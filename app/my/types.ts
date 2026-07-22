@@ -65,3 +65,14 @@ export type CreateRoomInput = {
   description: string;
   verificationTime: string;
 };
+
+/* 방 초대 코드 만들기 */
+export type RoomInvite = {
+  id: number;
+  roomId: number;
+  code: string;
+  expiresAt: string | null;
+  maxUses: number;
+  usedCount: number;
+  isActive: boolean;
+};

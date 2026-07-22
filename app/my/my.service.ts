@@ -53,6 +53,99 @@ export async function getMyProfile(userId: string): Promise<Profile | null> {
 }
 
 /**
+ * 프로필 이미지를 Supabase Storage에 업로드합니다.
+ *
+ * profile-images 버킷이 먼저 생성되어 있어야 합니다.
+ * 공개 URL을 사용하므로 버킷은 Public으로 설정합니다.
+ */
+export async function uploadProfileImage(
+  userId: string,
+  file: File
+): Promise<string> {
+  const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
+
+  /**
+   * 같은 경로에 계속 덮어씁니다.
+   * 사용자마다 하나의 프로필 이미지만 유지됩니다.
+   */
+  const filePath = `${userId}/avatar.${extension}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from("profile-images")
+    .upload(filePath, file, {
+      upsert: true,
+      contentType: file.type || undefined,
+      cacheControl: "3600",
+    });
+
+  if (uploadError) {
+    throw new Error(`프로필 사진 업로드 실패: ${uploadError.message}`);
+  }
+
+  const { data } = supabase.storage
+    .from("profile-images")
+    .getPublicUrl(filePath);
+
+  /**
+   * 같은 URL을 계속 사용하면 브라우저 캐시 때문에
+   * 이전 이미지가 보일 수 있어서 버전 값을 붙입니다.
+   */
+  return `${data.publicUrl}?v=${Date.now()}`;
+}
+
+/**
+ * 현재 사용자의 프로필을 수정합니다.
+ */
+export async function updateMyProfile(
+  userId: string,
+  input: {
+    displayName: string;
+    bio: string;
+    avatarUrl: string | null;
+  }
+): Promise<Profile> {
+  const displayName = input.displayName.trim();
+
+  if (!displayName) {
+    throw new Error("프로필 이름을 입력해주세요.");
+  }
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .upsert(
+      {
+        id: userId,
+        display_name: displayName,
+        bio: input.bio.trim() || null,
+        avatar_url: input.avatarUrl,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        onConflict: "id",
+      }
+    )
+    .select(
+      `
+        id,
+        username,
+        display_name,
+        avatar_url,
+        bio,
+        onboarding_completed,
+        created_at,
+        updated_at
+      `
+    )
+    .single();
+
+  if (error) {
+    throw new Error(`프로필 수정 실패: ${error.message}`);
+  }
+
+  return data as Profile;
+}
+
+/**
  * 현재 사용자가 참여 중인 방을 조회합니다.
  *
  * room_members를 기준으로 조회하는 이유:
@@ -223,4 +316,99 @@ export async function logout(): Promise<void> {
   if (error) {
     throw new Error(`로그아웃 실패: ${error.message}`);
   }
+}
+
+/* 방 초대 코드를 만듭니다 */
+function createInviteCode(length = 6): string {
+  const characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  return Array.from({ length }, () => {
+    const index = Math.floor(Math.random() * characters.length);
+    return characters[index];
+  }).join("");
+}
+
+export async function createRoomInvite(
+  userId: string,
+  roomId: number
+): Promise<string> {
+  /**
+   * 먼저 활성화된 기존 코드가 있으면 재사용합니다.
+   */
+  const { data: existingInvite, error: existingError } = await supabase
+    .from("room_invites")
+    .select("code")
+    .eq("room_id", roomId)
+    .eq("created_by", userId)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (existingError) {
+    throw new Error(`초대 코드 조회 실패: ${existingError.message}`);
+  }
+
+  if (existingInvite?.code) {
+    return existingInvite.code;
+  }
+
+  /**
+   * 코드 충돌 가능성이 있으므로 최대 5번 재시도합니다.
+   */
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = createInviteCode();
+
+    const { data, error } = await supabase
+      .from("room_invites")
+      .insert({
+        room_id: roomId,
+        code,
+        created_by: userId,
+        max_uses: 10,
+        used_count: 0,
+        is_active: true,
+      })
+      .select("code")
+      .single();
+
+    if (!error && data) {
+      return data.code;
+    }
+
+    /**
+     * PostgreSQL unique violation:
+     * 우연히 같은 코드가 존재하면 새 코드로 다시 시도합니다.
+     */
+    if (error?.code !== "23505") {
+      throw new Error(`초대 코드 생성 실패: ${error?.message}`);
+    }
+  }
+
+  throw new Error("초대 코드를 만들지 못했습니다. 다시 시도해주세요.");
+}
+
+export async function joinRoomByInviteCode(
+  inviteCode: string
+): Promise<number> {
+  const normalizedCode = inviteCode.trim().toUpperCase();
+
+  if (!normalizedCode) {
+    throw new Error("초대 코드를 입력해주세요.");
+  }
+
+  const { data, error } = await supabase.rpc(
+    "join_room_by_invite_code",
+    {
+      invite_code: normalizedCode,
+    }
+  );
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (typeof data !== "number") {
+    throw new Error("입장한 방 정보를 확인하지 못했습니다.");
+  }
+
+  return data;
 }
