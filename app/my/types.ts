@@ -76,3 +76,20 @@ export type RoomInvite = {
   usedCount: number;
   isActive: boolean;
 };
+
+/* 캘린더 */
+export type WeeklyVerificationLevel =
+  | "perfect"
+  | "half"
+  | "low"
+  | "future";
+
+export type WeeklyVerificationDay = {
+  date: string;
+  dayLabel: string;
+  dayNumber: number;
+  isToday: boolean;
+  approvedCount: number;
+  totalRoomCount: number;
+  level: WeeklyVerificationLevel;
+};

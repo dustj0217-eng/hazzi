@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   createRoom,
@@ -14,30 +14,16 @@ import {
   uploadProfileImage,
   createRoomInvite,
   joinRoomByInviteCode,
+  getMyWeeklyVerifications,
 } from "./my.service";
-import type { MyRoom, Profile } from "./types";
+import type {
+  MyRoom,
+  Profile,
+  WeeklyVerificationDay,
+} from "./types";
 import BottomNav from "@/components/nav";
 
 const TODAY = new Date();
-
-/**
- * 이번 단계에서는 캘린더 UI만 남겨둡니다.
- *
- * 실제 인증 기록은 아직 verifications 테이블이 없으므로 연결하지 않습니다.
- * verifications를 만든 뒤 이 배열 대신 월별 인증 데이터를 조회하면 됩니다.
- */
-function buildCalendarDays(year: number, monthIndex: number) {
-  const lastDate = new Date(year, monthIndex + 1, 0).getDate();
-  const firstWeekday = new Date(year, monthIndex, 1).getDay();
-
-  // 화면은 월요일 시작이므로 일요일(0)을 마지막 칸(6)으로 바꿉니다.
-  const mondayBasedBlankCount = firstWeekday === 0 ? 6 : firstWeekday - 1;
-
-  return {
-    blankCount: mondayBasedBlankCount,
-    days: Array.from({ length: lastDate }, (_, index) => index + 1),
-  };
-}
 
 export default function MyPageClient() {
   const router = useRouter();
@@ -80,6 +66,9 @@ export default function MyPageClient() {
   const [joinCode, setJoinCode] = useState("");
   const [joiningRoom, setJoiningRoom] = useState(false);
 
+  // 캘린더 관련
+  const [weeklyLog, setWeeklyLog] = useState<WeeklyVerificationDay[]>([]);
+
   /**
    * 프로필과 방 목록을 한 번에 다시 불러옵니다.
    *
@@ -105,8 +94,14 @@ export default function MyPageClient() {
         getMyRooms(user.id),
       ]);
 
+      const weeklyData = await getMyWeeklyVerifications(
+        user.id,
+        roomData.length
+      );
+
       setProfile(profileData);
       setRooms(roomData);
+      setWeeklyLog(weeklyData);
     } catch (error) {
       console.error(error);
       setPageError(
@@ -130,11 +125,6 @@ export default function MyPageClient() {
     "사용자";
 
   const avatarUrl = profile?.avatar_url?.trim() ?? "";
-
-  const calendar = useMemo(
-    () => buildCalendarDays(TODAY.getFullYear(), TODAY.getMonth()),
-    []
-  );
 
   /* 방 추가 */
   async function handleCreateRoom() {
@@ -445,48 +435,56 @@ export default function MyPageClient() {
         )}
 
         {/* 캘린더: 현재는 날짜 UI만 표시 */}
-        <section className="overflow-hidden rounded-[30px] bg-white p-5 shadow-sm">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-[11px] font-semibold tracking-[0.18em] text-neutral-400">
-                MONTHLY LOG
-              </p>
-              <h2 className="mt-1 text-2xl font-bold tracking-[-0.05em]">
-                {TODAY.getFullYear()}년 {TODAY.getMonth() + 1}월
-              </h2>
-            </div>
-
-            <p className="text-right text-xs leading-5 text-neutral-400">
-              인증 기록 연동은
-              <br />
-              다음 단계에서 추가
+        <section className="rounded-[30px] bg-white p-5 shadow-sm">
+          <div>
+            <p className="text-[11px] font-semibold tracking-[0.18em] text-neutral-400">
+              WEEKLY LOG
             </p>
+
+            <h2 className="mt-1 text-2xl font-bold">
+              이번 주
+            </h2>
           </div>
 
-          <div className="mt-6 grid grid-cols-7 text-center text-[11px] font-semibold text-neutral-300">
-            {["월", "화", "수", "목", "금", "토", "일"].map((weekday) => (
-              <span key={weekday}>{weekday}</span>
-            ))}
-          </div>
-
-          <div className="mt-2 grid grid-cols-7 gap-y-2">
-            {Array.from({ length: calendar.blankCount }).map((_, index) => (
-              <div key={`blank-${index}`} className="aspect-square" />
-            ))}
-
-            {calendar.days.map((day) => {
-              const isToday = day === TODAY.getDate();
+          <div className="mt-6 grid grid-cols-7 gap-2">
+            {weeklyLog.map((day) => {
+              const imageSrc =
+                day.level === "perfect"
+                  ? "/images/perfect.png"
+                  : day.level === "half"
+                  ? "/images/half.png"
+                  : "";
 
               return (
                 <div
-                  key={day}
-                  className={`flex aspect-square items-center justify-center rounded-2xl text-sm font-semibold ${
-                    isToday
-                      ? "bg-black text-white"
-                      : "text-neutral-700"
-                  }`}
+                  key={day.date}
+                  className="flex flex-col items-center"
                 >
-                  {day}
+                  <p className="text-xs text-neutral-400">
+                    {day.dayLabel}
+                  </p>
+
+                  <div
+                    className={`mt-2 flex aspect-square w-full items-center justify-center rounded-2xl ${
+                      day.isToday
+                        ? "border-2 border-black"
+                        : "border border-neutral-100"
+                    }`}
+                  >
+                    {imageSrc ? (
+                      <img
+                        src={imageSrc}
+                        alt=""
+                        className="h-full w-full object-contain p-1"
+                      />
+                    ) : (
+                      <div className="h-2.5 w-2.5 rounded-full bg-neutral-200" />
+                    )}
+                  </div>
+
+                  <p className="mt-1 text-[10px] text-neutral-400">
+                    {day.dayNumber}
+                  </p>
                 </div>
               );
             })}

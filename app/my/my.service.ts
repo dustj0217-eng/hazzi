@@ -4,6 +4,7 @@ import type {
   MyRoom,
   Profile,
   RoomMembershipQueryRow,
+  WeeklyVerificationDay,
 } from "./types";
 
 /**
@@ -411,4 +412,90 @@ export async function joinRoomByInviteCode(
   }
 
   return data;
+}
+
+/* 캘린더 */
+function formatDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function getMonday(date: Date): Date {
+  const result = new Date(date);
+  const weekday = result.getDay();
+
+  const diff = weekday === 0 ? -6 : 1 - weekday;
+
+  result.setDate(result.getDate() + diff);
+  result.setHours(0, 0, 0, 0);
+
+  return result;
+}
+
+export async function getMyWeeklyVerifications(
+  userId: string,
+  totalRoomCount: number
+): Promise<WeeklyVerificationDay[]> {
+  const today = new Date();
+  const monday = getMonday(today);
+
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+
+  const { data, error } = await supabase
+    .from("verifications")
+    .select("room_id, status, verification_date")
+    .eq("user_id", userId)
+    .gte("verification_date", formatDate(monday))
+    .lte("verification_date", formatDate(sunday));
+
+  if (error) {
+    throw new Error(`주간 인증 조회 실패: ${error.message}`);
+  }
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(monday);
+    date.setDate(monday.getDate() + index);
+
+    const dateString = formatDate(date);
+    const todayString = formatDate(today);
+
+    const approvedRoomIds = new Set(
+      (data ?? [])
+        .filter(
+          (row) =>
+            row.verification_date === dateString &&
+            row.status === "approved"
+        )
+        .map((row) => row.room_id)
+    );
+
+    const approvedCount = approvedRoomIds.size;
+
+    let level: WeeklyVerificationDay["level"] = "low";
+
+    if (dateString > todayString) {
+      level = "future";
+    } else if (
+      totalRoomCount > 0 &&
+      approvedCount >= totalRoomCount
+    ) {
+      level = "perfect";
+    } else if (approvedCount > 0) {
+      level = "half";
+    }
+
+    return {
+      date: dateString,
+      dayLabel: ["월", "화", "수", "목", "금", "토", "일"][index],
+      dayNumber: date.getDate(),
+      isToday: dateString === todayString,
+      approvedCount,
+      totalRoomCount,
+      level,
+    };
+  });
 }

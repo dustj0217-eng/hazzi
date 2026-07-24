@@ -198,10 +198,6 @@ function EmptyMemberCard({
       </div>
 
       <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
-        <div className="flex h-8 w-8 items-center justify-center rounded-full border border-dashed border-neutral-300">
-          <span className="h-1.5 w-1.5 rounded-full bg-neutral-200" />
-        </div>
-
         <p className="mt-3 text-sm font-bold">
           아직 인증 전
         </p>
